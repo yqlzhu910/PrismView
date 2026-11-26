@@ -1,6 +1,6 @@
 ﻿param(
     [ValidatePattern('^\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?$')]
-    [string]$Version = '1.0.0'
+    [string]$Version = '1.1.0'
 )
 $ErrorActionPreference = 'Stop'
 $package = Join-Path $PSScriptRoot 'outputs\STLQuickView'
@@ -10,11 +10,13 @@ $required = @(
     'osg130-osgGA.dll', 'osg130-osgUtil.dll', 'osg130-osgFX.dll',
     'osg130-osgText.dll', 'ot20-OpenThreads.dll', 'libpng16.dll', 'zlib.dll',
     'osgPlugins-3.4.0\osgdb_obj.dll', 'osgPlugins-3.4.0\osgdb_stl.dll',
+    'osgPlugins-3.4.0\osgdb_ply.dll',
     'osgPlugins-3.4.0\osgdb_png.dll', 'osgPlugins-3.4.0\osgdb_jpeg.dll',
     'osgPlugins-3.4.0\osgdb_bmp.dll', 'osgPlugins-3.4.0\osgdb_tga.dll',
     'assets\STLQuickView.ico', 'assets\STLQuickView.png',
     'licenses\OpenSceneGraph-LICENSE.txt', 'licenses\libpng-LICENSE.txt',
     'licenses\zlib-LICENSE.txt', 'licenses\IJG-README.txt',
+    'licenses\PLY-NOTICES.txt', 'licenses\LGPL-2.1.txt',
     'THIRD_PARTY_NOTICES.md', '使用说明.txt'
 )
 foreach ($relative in $required) {

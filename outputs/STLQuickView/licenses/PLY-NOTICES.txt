@@ -1,0 +1,137 @@
+PLY plugin notices preserved from the OpenSceneGraph-3.4.0 source release.
+Source: https://github.com/openscenegraph/OpenSceneGraph/tree/OpenSceneGraph-3.4.0/src/osgPlugins/ply
+
+ReaderWriterPLY.cpp
+------------------------------------------------------------
+/*
+ * PLY  ( Stanford Triangle Format )  File Loader for OSG
+ * Copyright (C) 2009 by VizExperts Limited
+ * All rights reserved.
+ *
+ * This program is  free  software;  you can redistribute it and/or modify it
+ * under the terms of the  GNU Lesser General Public License  as published by
+ * the  Free Software Foundation;  either version 2.1 of the License,  or (at
+ * your option) any later version.
+ *
+ * This  program  is  distributed in  the  hope that it will  be useful,  but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+ * or  FITNESS FOR A  PARTICULAR PURPOSE.  See the  GNU Lesser General Public
+ * License for more details.
+ *
+ * You should  have received  a copy of the GNU Lesser General Public License
+ * along with  this program;  if not, write to the  Free Software Foundation,
+ * Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ */
+
+vertexData.cpp
+------------------------------------------------------------
+/*
+    vertexData.cpp
+    Copyright (c) 2007, Tobias Wolf <twolf@access.unizh.ch>
+    All rights reserved.
+
+    Implementation of the VertexData class.
+*/
+
+/** note, derived from Equalizer LGPL source.*/
+
+vertexData.h
+------------------------------------------------------------
+/*
+    vertexData.h
+    Copyright (c) 2007, Tobias Wolf <twolf@access.unizh.ch>
+    All rights reserved.
+
+    Header file of the VertexData class.
+*/
+
+/** note, derived from Equalizer LGPL source.*/
+
+typedefs.h
+------------------------------------------------------------
+/*
+    typedefs.h
+    Copyright (c) 2007, Tobias Wolf <twolf@access.unizh.ch>
+    All rights reserved.
+
+    Type definitions for the mesh classes.
+*/
+
+/** note, derived from Equalizer LGPL source.*/
+
+ply.h
+------------------------------------------------------------
+/*
+
+Header for PLY polygon files.
+
+- Greg Turk, March 1994
+
+A PLY file contains a single polygonal _object_.
+
+An object is composed of lists of _elements_.  Typical elements are
+vertices, faces, edges and materials.
+
+Each type of element for a given object has one or more _properties_
+associated with the element type.  For instance, a vertex element may
+have as properties three floating-point values x,y,z and three unsigned
+chars for red, green and blue.
+
+---------------------------------------------------------------
+
+Copyright (c) 1994 The Board of Trustees of The Leland Stanford
+Junior University.  All rights reserved.
+
+Permission to use, copy, modify and distribute this software and its
+documentation for any purpose is hereby granted without fee, provided
+that the above copyright notice and this permission notice appear in
+all copies of this software and that you do not sell the software.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTY OF ANY KIND,
+EXPRESS, IMPLIED OR OTHERWISE, INCLUDING WITHOUT LIMITATION, ANY
+WARRANTY OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+
+*/
+
+plyfile.cpp
+------------------------------------------------------------
+/* Copyright (c) 2005-2007, Stefan Eilemann <eile@equalizergraphics.com>
+   All rights reserved.
+   - Cleaned up code for 64 bit, little and big endian support
+   - Added new ply data types (uint8, float32, int32)
+ */
+
+/*
+
+The interface routines for reading and writing PLY polygon files.
+
+Greg Turk, February 1994
+
+---------------------------------------------------------------
+
+A PLY file contains a single polygonal _object_.
+
+An object is composed of lists of _elements_.  Typical elements are
+vertices, faces, edges and materials.
+
+Each type of element for a given object has one or more _properties_
+associated with the element type.  For instance, a vertex element may
+have as properties the floating-point values x,y,z and the three unsigned
+chars representing red, green and blue.
+
+---------------------------------------------------------------
+
+Copyright (c) 1994 The Board of Trustees of The Leland Stanford
+Junior University.  All rights reserved.
+
+Permission to use, copy, modify and distribute this software and its
+documentation for any purpose is hereby granted without fee, provided
+that the above copyright notice and this permission notice appear in
+all copies of this software and that you do not sell the software.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTY OF ANY KIND,
+EXPRESS, IMPLIED OR OTHERWISE, INCLUDING WITHOUT LIMITATION, ANY
+WARRANTY OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+
+*/
+

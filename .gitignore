@@ -2,6 +2,7 @@ work/
 dist/
 *.zip
 *.stl
+*.ply
 *.exe
 *.dll
 *.obj

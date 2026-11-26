@@ -11,7 +11,17 @@ The Windows release bundles the unmodified runtime libraries and plugins from th
 - Upstream source release: https://github.com/openscenegraph/OpenSceneGraph/tree/OpenSceneGraph-3.4.0
 - Source archive: https://github.com/openscenegraph/OpenSceneGraph/archive/refs/tags/OpenSceneGraph-3.4.0.zip
 
-The runtime includes the OSG core, viewer, database, effects, interaction, utilities, text, and STL / OBJ / image plugins. These libraries are dynamically linked and have not been modified for this viewer.
+The runtime includes the OSG core, viewer, database, effects, interaction, utilities, text, and STL / OBJ / PLY / image plugins. These libraries are dynamically linked and have not been modified for this viewer.
+
+## PLY plugin components
+
+The OSG PLY plugin also contains code with the following notices. Its original notices are preserved in [licenses/PLY-NOTICES.txt](licenses/PLY-NOTICES.txt).
+
+- PLY reader: Copyright (C) 2009 VizExperts Limited, LGPL 2.1 or later.
+- Vertex data and type definitions: Copyright (c) 2007 Tobias Wolf; derived from Equalizer LGPL source.
+- PLY routines: Copyright (c) 1994 The Board of Trustees of The Leland Stanford Junior University; Copyright (c) 2005-2007 Stefan Eilemann for subsequent changes. The Stanford permission includes a condition that the software is not sold; retain its complete notice when redistributing this free package.
+- Full LGPL 2.1 text: [licenses/LGPL-2.1.txt](licenses/LGPL-2.1.txt), obtained from the [SPDX license list](https://github.com/spdx/license-list-data/blob/main/text/LGPL-2.1-or-later.txt).
+- Corresponding PLY source: https://github.com/openscenegraph/OpenSceneGraph/tree/OpenSceneGraph-3.4.0/src/osgPlugins/ply (also included in the full source archive linked above).
 
 ## libpng
 

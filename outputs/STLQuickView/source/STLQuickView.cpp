@@ -48,10 +48,14 @@ static LoadJob* job=NULL;
 static std::wstring pendingPath;
 static ULONGLONG lastProgressTime=0;
 static unsigned __int64 currentTriangles=0;
+static unsigned __int64 currentPoints=0;
+static void applyDisplayMode();
 static unsigned __stdcall readWorker(void* parameter) {
     LoadJob* work=static_cast<LoadJob*>(parameter);
     if(work->path.size()>4 && _wcsicmp(work->path.c_str()+work->path.size()-4,L".obj")==0)
         stlview::readObj(work->path,work->progress,work->model,work->error);
+    else if(work->path.size()>4 && _wcsicmp(work->path.c_str()+work->path.size()-4,L".ply")==0)
+        stlview::readPly(work->path,work->progress,work->model,work->error);
     else stlview::read(work->path,work->progress,work->model,work->error);
     return 0;
 }
@@ -66,7 +70,8 @@ static std::wstring directory(const std::wstring& path) {
 }
 static bool isModel(const std::wstring& path) {
     return path.size()>4 && (_wcsicmp(path.c_str()+path.size()-4,L".stl")==0
-        || _wcsicmp(path.c_str()+path.size()-4,L".obj")==0);
+        || _wcsicmp(path.c_str()+path.size()-4,L".obj")==0
+        || _wcsicmp(path.c_str()+path.size()-4,L".ply")==0);
 }
 static int currentIndex() {
     for(size_t i=0;i<files.size();++i)
@@ -116,7 +121,7 @@ static bool loadFile(const std::wstring& requested) {
     wchar_t full[32768];
     DWORD count=GetFullPathNameW(requested.c_str(),32768,full,NULL);
     if(!count || count>=32768 || !isModel(full)) {
-        reportError(L"请选择 .stl 或 .obj 文件。"); return false;
+        reportError(L"请选择 .stl、.obj 或 .ply 文件。"); return false;
     }
     if(job) {
         pendingPath=full;
@@ -135,8 +140,10 @@ static void pollLoad() {
     if(!job) return;
     if(job->thread && WaitForSingleObject(job->thread,0)!=WAIT_OBJECT_0) {
         if(!job->progress.canceled() && GetTickCount64()-lastProgressTime>100) {
-            std::wostringstream text; text << L"正在读取 " << InterlockedCompareExchange(&job->progress.percent,0,0)
-                << L"%    " << filename(job->path) << L"    |    可取消 / 选择其他文件";
+            LONG percent=InterlockedCompareExchange(&job->progress.percent,0,0);
+            std::wostringstream text; text << L"正在读取 ";
+            if(percent>=0) text << percent << L"%    ";
+            text << filename(job->path) << L"    |    可取消 / 选择其他文件";
             showStatus(text.str()); lastProgressTime=GetTickCount64();
         }
         return;
@@ -155,7 +162,7 @@ static void pollLoad() {
         return;
     }
     // Same thread/context as viewer->frame(). Prepare one drawable per iteration.
-    // STL drawables are bounded to 4.5 MiB; OBJ keeps its material/group structure.
+    // STL drawables are bounded to 4.5 MiB; OBJ/PLY keep the plugin's geometry.
     if(job->uploaded<job->model.chunks.size()) {
         if(!graphics->makeCurrent()) { job->error=L"无法准备 OpenGL 显示数据。"; return; }
         while(glGetError()!=GL_NO_ERROR) {}
@@ -178,6 +185,7 @@ static void pollLoad() {
     root->addChild(job->model.node);
     currentPath=job->path;
     currentTriangles=job->model.triangles;
+    currentPoints=job->model.points;
     currentFolder=directory(currentPath);
     if(currentIndex()<0) files.push_back(currentPath);
     discardJob();
@@ -187,19 +195,22 @@ static void pollLoad() {
     viewer->requestRedraw();
     SetWindowTextW(mainWindow,(filename(currentPath)+L" — 棱镜 3D").c_str());
     std::wostringstream message;
-    message << L"完整模型：" << currentTriangles << L" 个三角形    |    " << filename(currentPath)
+    if(currentTriangles) message << L"完整模型：" << currentTriangles << L" 个三角形";
+    if(currentPoints) message << (currentTriangles?L"，":L"点云：") << currentPoints << L" 个点";
+    message << L"    |    " << filename(currentPath)
             << L"    |    左键旋转 · 滚轮缩放 · 空格复位";
     showStatus(message.str());
-    EnableWindow(buttons[3],TRUE); EnableWindow(buttons[4],TRUE);
+    applyDisplayMode();
+    EnableWindow(buttons[3],TRUE); EnableWindow(buttons[4],currentTriangles>0);
     EnableWindow(buttons[5],TRUE);
 }
 static void openDialog() {
     wchar_t path[32768]={0};
     OPENFILENAMEW dialog={sizeof(dialog)};
     dialog.hwndOwner=mainWindow;
-    dialog.lpstrFilter=L"支持的模型 (*.stl;*.obj)\0*.stl;*.obj\0STL 模型 (*.stl)\0*.stl\0OBJ 模型 (*.obj)\0*.obj\0\0";
+    dialog.lpstrFilter=L"支持的模型 (*.stl;*.obj;*.ply)\0*.stl;*.obj;*.ply\0STL 模型 (*.stl)\0*.stl\0OBJ 模型 (*.obj)\0*.obj\0PLY 模型 (*.ply)\0*.ply\0\0";
     dialog.lpstrFile=path; dialog.nMaxFile=32768;
-    dialog.lpstrTitle=L"选择 STL / OBJ 模型";
+    dialog.lpstrTitle=L"选择 STL / OBJ / PLY 模型";
     dialog.lpstrInitialDir=currentFolder.empty()?NULL:currentFolder.c_str();
     dialog.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR|OFN_EXPLORER;
     if(GetOpenFileNameW(&dialog)) loadFile(path);
@@ -211,15 +222,16 @@ static void stepFile(int direction) {
     loadFile(path);
 }
 static void applyDisplayMode() {
-    const bool overlay=displayMode==OverlayMode;
+    const bool pointCloud=currentPoints>0 && currentTriangles==0;
+    const bool overlay=displayMode==OverlayMode && !pointCloud;
     root->setEnabled(overlay);
     polygonMode->setMode(osg::PolygonMode::FRONT_AND_BACK,
-        displayMode==WireMode?osg::PolygonMode::LINE:osg::PolygonMode::FILL);
+        displayMode==WireMode && !pointCloud?osg::PolygonMode::LINE:osg::PolygonMode::FILL);
     // The overlay's second pass must be able to select LINE itself.
     root->getOrCreateStateSet()->setAttributeAndModes(polygonMode,
         overlay?osg::StateAttribute::ON:(osg::StateAttribute::ON|osg::StateAttribute::OVERRIDE));
     const wchar_t* labels[]={L"实体 (W)",L"线框 (W)",L"实体+线框"};
-    SetWindowTextW(buttons[4],labels[displayMode]);
+    SetWindowTextW(buttons[4],pointCloud?L"点云":labels[displayMode]);
 }
 static void command(int id) {
     switch(id) {
@@ -233,6 +245,7 @@ static void command(int id) {
         if(job) { InterlockedExchange(&job->progress.cancel,1); showStatus(L"正在取消读取……"); }
         break;
     case WireId:
+        if(currentPoints>0 && !currentTriangles) break;
         displayMode=DisplayMode((displayMode+1)%3);
         applyDisplayMode();
         break;
@@ -297,7 +310,7 @@ static void initializeScene() {
     material->setDiffuse(osg::Material::FRONT_AND_BACK,osg::Vec4(0.75f,0.81f,0.88f,1));
     material->setAmbient(osg::Material::FRONT_AND_BACK,osg::Vec4(0.25f,0.28f,0.32f,1));
     material->setColorMode(osg::Material::OFF);
-    // Default for STL/unmaterialed OBJ; let OBJ's own materials take precedence.
+    // Default for STL/unmaterialed OBJ; let model materials/vertex colors win.
     state->setAttributeAndModes(material,osg::StateAttribute::ON);
     osg::ref_ptr<osg::LightModel> lightModel=new osg::LightModel;
     lightModel->setTwoSided(true);
@@ -361,7 +374,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int show) {
     for(int i=0;i<7;++i) { buttons[i]=control(L"BUTTON",labels[i],BS_PUSHBUTTON|WS_TABSTOP,ids[i]); if(i>0) EnableWindow(buttons[i],FALSE); }
     folderLabel=control(L"STATIC",L"本次打开的文件\n只记录你主动选择的模型",SS_LEFT,0);
     fileList=control(L"LISTBOX",L"",LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|WS_BORDER|WS_VSCROLL|WS_HSCROLL|WS_TABSTOP,ListId);
-    statusLabel=control(L"STATIC",L"点击“打开”或拖入 STL / OBJ；不会自动扫描文件夹。大文件可取消加载。",SS_LEFT|SS_PATHELLIPSIS,0);
+    statusLabel=control(L"STATIC",L"点击“打开”或拖入 STL / OBJ / PLY；不会自动扫描文件夹。大文件可取消加载。",SS_LEFT|SS_PATHELLIPSIS,0);
     rendererLabel=control(L"STATIC",L"正在检测渲染设备……",SS_LEFT|SS_ENDELLIPSIS,0);
     renderWindow=CreateWindowExW(0,canvas.lpszClassName,L"",WS_CHILD|WS_VISIBLE|WS_CLIPSIBLINGS|WS_CLIPCHILDREN,
         0,0,1,1,mainWindow,NULL,instance,NULL);

@@ -10,7 +10,7 @@ New-Item -ItemType Directory -Force -Path $build | Out-Null
 # VS2012 recognizes the BOM and preserves Chinese wide-string literals.
 $source = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'STLQuickView.cpp') -Raw -Encoding UTF8
 [IO.File]::WriteAllText((Join-Path $build 'STLQuickView.cpp'), $source, (New-Object Text.UTF8Encoding($true)))
-foreach ($file in @('StlLoader.h','StlLoader.cpp','ObjLoader.cpp')) {
+foreach ($file in @('StlLoader.h','StlLoader.cpp','ObjLoader.cpp','PlyLoader.cpp')) {
     $text = Get-Content -LiteralPath (Join-Path $PSScriptRoot $file) -Raw -Encoding UTF8
     [IO.File]::WriteAllText((Join-Path $build $file), $text, (New-Object Text.UTF8Encoding($true)))
 }
@@ -32,7 +32,9 @@ cl /nologo /c /EHsc /MD /O2 /W3 /DUNICODE /D_UNICODE /I"$OsgRoot\include" StlLoa
 if errorlevel 1 exit /b 1
 cl /nologo /c /EHsc /MD /O2 /W3 /DUNICODE /D_UNICODE /I"$OsgRoot\include" ObjLoader.cpp
 if errorlevel 1 exit /b 1
-link /nologo STLQuickView.obj StlLoader.obj ObjLoader.obj STLQuickView.res /OUT:"$package\STLQuickView.exe" /SUBSYSTEM:WINDOWS /LIBPATH:"$OsgRoot\lib" osgViewer.lib osgGA.lib osgFX.lib osgDB.lib osgUtil.lib osg.lib OpenThreads.lib user32.lib gdi32.lib comdlg32.lib shell32.lib shlwapi.lib opengl32.lib
+cl /nologo /c /EHsc /MD /O2 /W3 /DUNICODE /D_UNICODE /I"$OsgRoot\include" PlyLoader.cpp
+if errorlevel 1 exit /b 1
+link /nologo STLQuickView.obj StlLoader.obj ObjLoader.obj PlyLoader.obj STLQuickView.res /OUT:"$package\STLQuickView.exe" /SUBSYSTEM:WINDOWS /LIBPATH:"$OsgRoot\lib" osgViewer.lib osgGA.lib osgFX.lib osgDB.lib osgUtil.lib osg.lib OpenThreads.lib user32.lib gdi32.lib comdlg32.lib shell32.lib shlwapi.lib opengl32.lib
 exit /b %errorlevel%
 "@
 [IO.File]::WriteAllText((Join-Path $build 'compile.cmd'), $compile, [Text.Encoding]::Default)
@@ -42,7 +44,7 @@ $dlls = @('osg130-osgViewer.dll','osg130-osgGA.dll','osg130-osgFX.dll','osg130-o
 foreach ($dll in $dlls) { Copy-Item -LiteralPath (Join-Path $OsgRoot "bin\$dll") -Destination $package -Force }
 $pluginFolder = Join-Path $package 'osgPlugins-3.4.0'
 New-Item -ItemType Directory -Force -Path $pluginFolder | Out-Null
-foreach ($plugin in @('osgdb_stl.dll','osgdb_obj.dll','osgdb_png.dll','osgdb_jpeg.dll','osgdb_bmp.dll','osgdb_tga.dll')) {
+foreach ($plugin in @('osgdb_stl.dll','osgdb_obj.dll','osgdb_ply.dll','osgdb_png.dll','osgdb_jpeg.dll','osgdb_bmp.dll','osgdb_tga.dll')) {
     Copy-Item -LiteralPath (Join-Path $OsgRoot "bin\osgPlugins-3.4.0\$plugin") -Destination $pluginFolder -Force
 }
 foreach ($dll in @('msvcp110.dll','msvcr110.dll')) {
