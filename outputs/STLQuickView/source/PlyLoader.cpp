@@ -7,12 +7,103 @@
 #include <osg/TriangleFunctor>
 #include <osgDB/Registry>
 #include <osgDB/Options>
+#include <osgDB/fstream>
+#include <algorithm>
+#include <cstring>
+#include <float.h>
+#include <sstream>
 #include <stdexcept>
 
 namespace stlview {
 namespace {
 struct Canceled {};
 void check(Progress& progress) { if(progress.canceled()) throw Canceled(); }
+
+bool countLine(const std::string& line,const std::string& prefix,unsigned& count) {
+    if(line.compare(0,prefix.size(),prefix)!=0) return false;
+    std::string digits=line.substr(prefix.size());
+    if(digits.empty() || digits.find_first_not_of("0123456789")!=std::string::npos) return false;
+    std::istringstream input(digits);
+    return (input>>count) && count>0 && count<=INT_MAX/3;
+}
+
+// A common export has fixed-width vertex records and a triangle list. Read
+// complete blocks instead of asking the general PLY parser for each property.
+// Any other header/layout goes through the original plugin.
+osg::ref_ptr<osg::Node> readPackedMesh(const std::wstring& path,unsigned __int64 fileBytes,Progress& progress) {
+    std::ifstream file(path.c_str(),std::ios::binary);
+    std::vector<std::string> lines;
+    char line[256];
+    while(lines.size()<20 && file.getline(line,sizeof(line))) {
+        std::string clean(line);
+        if(!clean.empty() && clean.back()=='\r') clean.resize(clean.size()-1);
+        lines.push_back(clean);
+        if(clean=="end_header") break;
+    }
+    if(lines.size()<16 || lines[0]!="ply" || lines[1]!="format binary_little_endian 1.0") return NULL;
+    unsigned vertexCount=0,faceCount=0;
+    if(!countLine(lines[2],"element vertex ",vertexCount)) return NULL;
+    const char* properties[]={"property float x","property float y","property float z","property uchar red",
+        "property uchar green","property uchar blue","property uchar alpha",
+        "property float nx","property float ny","property float nz"};
+    // Keep the plugin's crease-normal generation for exports without normals.
+    for(unsigned i=0;i<sizeof(properties)/sizeof(properties[0]);++i)
+        if(lines[i+3]!=properties[i]) return NULL;
+    size_t next=13;
+    if(lines.size()<next+3 || !countLine(lines[next++],"element face ",faceCount)) return NULL;
+    if(lines[next++]!="property list uchar uint vertex_indices") return NULL;
+    const bool processId=lines[next]=="property uint process_id";
+    if(processId) ++next;
+    if(next+1!=lines.size() || lines[next]!="end_header") return NULL;
+    const unsigned vertexStride=28,faceStride=processId?17:13;
+    const unsigned __int64 headerBytes=static_cast<unsigned __int64>(file.tellg());
+    if(headerBytes+static_cast<unsigned __int64>(vertexCount)*vertexStride+
+       static_cast<unsigned __int64>(faceCount)*faceStride!=fileBytes) return NULL;
+    check(progress);
+    const unsigned block=16384;
+    std::vector<unsigned char> buffer(block*std::max(vertexStride,faceStride));
+    osg::ref_ptr<osg::Vec3Array> vertices=new osg::Vec3Array(vertexCount);
+    osg::ref_ptr<osg::Vec4Array> colors=new osg::Vec4Array(vertexCount);
+    osg::ref_ptr<osg::Vec3Array> normals=new osg::Vec3Array(vertexCount);
+    for(unsigned first=0;first<vertexCount;first+=block) {
+        check(progress);
+        unsigned length=std::min(block,vertexCount-first);
+        if(!file.read(reinterpret_cast<char*>(&buffer[0]),length*vertexStride)) throw std::runtime_error("truncated");
+        for(unsigned i=0;i<length;++i) {
+            const unsigned char* record=&buffer[i*vertexStride];
+            osg::Vec3& v=(*vertices)[first+i];
+            std::memcpy(v.ptr(),record,12);
+            if(!_finite(v.x()) || !_finite(v.y()) || !_finite(v.z())) throw std::runtime_error("invalid");
+            osg::Vec4& color=(*colors)[first+i];
+            for(unsigned k=0;k<4;++k) color[k]=float(record[12+k]/255.0);
+            std::memcpy((*normals)[first+i].ptr(),record+16,12);
+        }
+        InterlockedExchange(&progress.percent,LONG((headerBytes+static_cast<unsigned __int64>(first+length)*vertexStride)*90/fileBytes));
+    }
+    osg::ref_ptr<osg::DrawElementsUInt> faces=new osg::DrawElementsUInt(GL_TRIANGLES,faceCount*3);
+    for(unsigned first=0;first<faceCount;first+=block) {
+        check(progress);
+        unsigned length=std::min(block,faceCount-first);
+        if(!file.read(reinterpret_cast<char*>(&buffer[0]),length*faceStride)) throw std::runtime_error("truncated");
+        for(unsigned i=0;i<length;++i) {
+            const unsigned char* record=&buffer[i*faceStride];
+            if(record[0]!=3) return NULL;
+            unsigned* face=&(*faces)[(first+i)*3];
+            std::memcpy(face,record+1,12);
+            if(face[0]>=vertexCount || face[1]>=vertexCount || face[2]>=vertexCount) throw std::runtime_error("invalid");
+        }
+        InterlockedExchange(&progress.percent,LONG((fileBytes-static_cast<unsigned __int64>(faceCount-first-length)*faceStride)*90/fileBytes));
+    }
+    osg::ref_ptr<osg::Geometry> geometry=new osg::Geometry;
+    geometry->setVertexArray(vertices);
+    geometry->setColorArray(colors,osg::Array::BIND_PER_VERTEX);
+    geometry->addPrimitiveSet(faces);
+    check(progress);
+    geometry->setNormalArray(normals,osg::Array::BIND_PER_VERTEX);
+    osg::ref_ptr<osg::Geode> geode=new osg::Geode;
+    geode->addDrawable(geometry);
+    return geode;
+}
 
 bool encodePath(const std::wstring& path,std::string& result) {
 #ifdef OSG_USE_UTF8_FILENAME
@@ -102,14 +193,19 @@ bool readPly(const std::wstring& path,Progress& progress,Model& result,std::wstr
             || (data.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)) throw std::runtime_error("open");
         result.fileBytes=(static_cast<unsigned __int64>(data.nFileSizeHigh)<<32)|data.nFileSizeLow;
         if(!result.fileBytes) throw std::runtime_error("empty");
-        osgDB::ReaderWriter* reader=osgDB::Registry::instance()->getReaderWriterForExtension("ply");
-        if(!reader) throw std::runtime_error("plugin");
-        osg::ref_ptr<osgDB::Options> options=new osgDB::Options;
-        options->setObjectCacheHint(osgDB::Options::CACHE_NONE);
-        osgDB::ReaderWriter::ReadResult loaded=reader->readNode(pluginPath(path),options.get());
-        check(progress); // Never publish a partial/canceled model.
-        if(!loaded.validNode()) throw std::runtime_error("invalid");
-        result.node=loaded.getNode();
+        result.node=readPackedMesh(path,result.fileBytes,progress);
+        if(!result.node) {
+            check(progress);
+            InterlockedExchange(&progress.percent,-1);
+            osgDB::ReaderWriter* reader=osgDB::Registry::instance()->getReaderWriterForExtension("ply");
+            if(!reader) throw std::runtime_error("plugin");
+            osg::ref_ptr<osgDB::Options> options=new osgDB::Options;
+            options->setObjectCacheHint(osgDB::Options::CACHE_NONE);
+            osgDB::ReaderWriter::ReadResult loaded=reader->readNode(pluginPath(path),options.get());
+            check(progress); // Never publish a partial/canceled model.
+            if(!loaded.validNode()) throw std::runtime_error("invalid");
+            result.node=loaded.getNode();
+        }
         InterlockedExchange(&progress.percent,95);
         PreparePly prepare(result,progress);
         result.node->accept(prepare);

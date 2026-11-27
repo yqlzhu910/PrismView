@@ -1,6 +1,8 @@
 // Uses the production loading, GPU upload and display-mode code, with a pbuffer.
 #include "STLQuickView.cpp"
 #include <osgDB/WriteFile>
+#include <osgUtil/Statistics>
+#include <cstring>
 #include <iostream>
 
 static int failures=0;
@@ -70,12 +72,53 @@ int wmain(int argc,wchar_t** argv){
     require(currentPath==previous && root->getChild(0)==previousNode && files.size()==2,"cancellation retains current model and history");
     if(!loadFile(base+L"\\binary_big_endian.ply") || !finishLoad())return 8;
     require(currentTriangles==2 && !currentPoints && root->getEnabled() && IsWindowEnabled(buttons[4]),"mesh after point cloud restores overlay");
+    osg::ref_ptr<osg::Node> meshNode=root->getChild(0);
+    command(PrevId);
+    require(!job && currentPath==previous && root->getChild(0)==previousNode,"previous reuses uploaded point cloud");
+    command(NextId);
+    require(!job && root->getChild(0)==meshNode && currentTriangles==2,"next reuses uploaded mesh");
+    command(ReloadId);
+    require(job!=NULL,"F5 bypasses cached mesh");
+    if(!finishLoad())return 10;
+    std::wstring replaced=base+L"\\cache-replaced.ply";
+    if(!CopyFileW((base+L"\\binary_big_endian.ply").c_str(),replaced.c_str(),FALSE))return 11;
+    loadFile(replaced);if(!finishLoad())return 12;
+    command(PrevId);if(!finishLoad())return 13;
+    if(!CopyFileW((base+L"\\点云.ply").c_str(),replaced.c_str(),FALSE))return 14;
+    command(NextId);
+    require(job!=NULL,"changed file invalidates previous scene");
+    if(!finishLoad())return 15;
+    require(currentPoints==9 && !currentTriangles,"replacement contents displayed");
+    command(PrevId);if(!finishLoad())return 16;
     if(argc>2){
         if(!loadFile(argv[2]) || !finishLoad())return 9;
         command(WireId);image=draw(capture,"ply-sample-solid.png");
         unsigned visible=0;for(int y=0;y<480;++y)for(int x=0;x<640;++x){const unsigned char* p=image->data(x,y);visible+=!(p[0]==33 && p[1]==41 && p[2]==51);}
         require(visible>1000 && currentTriangles>0,"user sample renders through production loader");
+        osgUtil::StatsVisitor sceneStats;
+        root->getChild(0)->accept(sceneStats);
+        require(sceneStats._switchSet.empty() && sceneStats._lodSet.empty(),
+            "loaded mesh has a single level of detail");
         command(WireId);command(WireId);draw(capture,"ply-sample-overlay.png");
+        manipulator->setAllowThrow(false);
+        viewer->setCameraManipulator(manipulator);
+        osgGA::EventQueue* events=viewer->getEventQueue();
+        events->windowResize(0,0,640,480);
+        events->mouseButtonPress(280,200,1);
+        viewer->frame();
+        osg::Matrixd beforeDrag=manipulator->getMatrix();
+        events->mouseMotion(350,230);
+        viewer->frame();
+        require(manipulator->getMatrix()!=beforeDrag,"drag rotates the model");
+        osg::Matrixd heldView=camera->getViewMatrix();
+        osg::ref_ptr<osg::Image> held=new osg::Image(*capture->image,osg::CopyOp::DEEP_COPY_ALL);
+        events->mouseButtonRelease(350,230,1);
+        viewer->advance();viewer->eventTraversal();viewer->updateTraversal();
+        // Release can advance the trackball. Compare geometry from the exact held pose.
+        camera->setViewMatrix(heldView);
+        viewer->renderingTraversals();
+        require(std::memcmp(held->data(),capture->image->data(),held->getTotalSizeInBytes())==0,
+            "held and released frames have identical surface detail at the same angle");
     }
     viewer->setDone(true);viewer=NULL;graphics=NULL;root=NULL;polygonMode=NULL;manipulator=NULL;
     DestroyWindow(mainWindow);

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$OsgRoot = 'D:\OSG(x64)\OSG(x64)',
     [string]$VcRoot = 'C:\Program Files (x86)\Microsoft Visual Studio 11.0\VC'
 )
@@ -10,7 +10,7 @@ New-Item -ItemType Directory -Force -Path $build | Out-Null
 # VS2012 recognizes the BOM and preserves Chinese wide-string literals.
 $source = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'STLQuickView.cpp') -Raw -Encoding UTF8
 [IO.File]::WriteAllText((Join-Path $build 'STLQuickView.cpp'), $source, (New-Object Text.UTF8Encoding($true)))
-foreach ($file in @('StlLoader.h','StlLoader.cpp','ObjLoader.cpp','PlyLoader.cpp')) {
+foreach ($file in @('StlLoader.h','OpeningPreview.h','StlLoader.cpp','ObjLoader.cpp','PlyLoader.cpp')) {
     $text = Get-Content -LiteralPath (Join-Path $PSScriptRoot $file) -Raw -Encoding UTF8
     [IO.File]::WriteAllText((Join-Path $build $file), $text, (New-Object Text.UTF8Encoding($true)))
 }

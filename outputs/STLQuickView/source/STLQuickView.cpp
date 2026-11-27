@@ -3,9 +3,9 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <shellapi.h>
-#include <shlwapi.h>
 #include <process.h>
 #include "StlLoader.h"
+#include "OpeningPreview.h"
 #include <osg/Material>
 #include <osg/PolygonMode>
 #include <osg/LightModel>
@@ -36,22 +36,68 @@ static DisplayMode displayMode=SolidMode;
 static bool loading=false, closing=false;
 static int uiDpi=96;
 static int px(int value) { return MulDiv(value,uiDpi,96); }
+struct FileStamp {
+    unsigned __int64 bytes;
+    FILETIME time;
+    bool valid;
+    FileStamp():bytes(0),valid(false) {time.dwHighDateTime=time.dwLowDateTime=0;}
+    explicit FileStamp(const std::wstring& path):bytes(0),valid(false) {
+        time.dwHighDateTime=time.dwLowDateTime=0;
+        WIN32_FILE_ATTRIBUTE_DATA data;
+        if(GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&data) && !(data.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)) {
+            bytes=(static_cast<unsigned __int64>(data.nFileSizeHigh)<<32)|data.nFileSizeLow;
+            time=data.ftLastWriteTime; valid=true;
+        }
+    }
+    bool matches(const FileStamp& other) const {
+        return valid && other.valid && bytes==other.bytes && CompareFileTime(&time,&other.time)==0;
+    }
+};
+struct ReadyScene {
+    std::wstring path;
+    FileStamp stamp;
+    osg::ref_ptr<osg::Node> node;
+    unsigned __int64 triangles,points,estimatedBytes;
+    ReadyScene():triangles(0),points(0),estimatedBytes(0) {}
+    bool matches(const std::wstring& file,const FileStamp& disk) const {
+        return node && _wcsicmp(path.c_str(),file.c_str())==0 && stamp.matches(disk);
+    }
+};
+static ReadyScene activeScene,previousScene;
+static bool canKeep(const ReadyScene& scene) {
+    MEMORYSTATUSEX mem={sizeof(mem)};
+    return scene.node && scene.stamp.valid && GlobalMemoryStatusEx(&mem) &&
+        mem.ullAvailPhys>std::max(768ULL<<20,mem.ullTotalPhys/16) &&
+        scene.estimatedBytes<std::min(6ULL<<30,mem.ullTotalPhys/4);
+}
 struct LoadJob {
     std::wstring path,error;
     stlview::Progress progress;
     stlview::Model model;
     HANDLE thread;
     size_t uploaded;
-    LoadJob(const std::wstring& value):path(value),thread(NULL),uploaded(0) {}
+    FileStamp stamp;
+    osg::ref_ptr<osg::Node> opening;
+    volatile LONG openingReady;
+    bool openingVisible;
+    osg::Matrixd previousView,openingView;
+    LoadJob(const std::wstring& value):path(value),thread(NULL),uploaded(0),stamp(value),openingReady(0),openingVisible(false) {}
 };
 static LoadJob* job=NULL;
 static std::wstring pendingPath;
+static bool pendingReload=false;
 static ULONGLONG lastProgressTime=0;
 static unsigned __int64 currentTriangles=0;
 static unsigned __int64 currentPoints=0;
+static std::wstring modelStatus;
+
 static void applyDisplayMode();
 static unsigned __stdcall readWorker(void* parameter) {
     LoadJob* work=static_cast<LoadJob*>(parameter);
+    try {
+        work->opening=stlview::opening::read(work->path,work->stamp.bytes,work->progress);
+        if(work->opening) InterlockedExchange(&work->openingReady,1);
+    } catch(const std::bad_alloc&) {} // The full reader can proceed without an opening preview.
     if(work->path.size()>4 && _wcsicmp(work->path.c_str()+work->path.size()-4,L".obj")==0)
         stlview::readObj(work->path,work->progress,work->model,work->error);
     else if(work->path.size()>4 && _wcsicmp(work->path.c_str()+work->path.size()-4,L".ply")==0)
@@ -108,6 +154,57 @@ static void reportError(const std::wstring& text) {
     MessageBoxW(mainWindow,text.c_str(),L"棱镜 3D",MB_OK|MB_ICONWARNING);
     SendMessageW(fileList,LB_SETCURSEL,currentIndex(),0);
 }
+static void rememberAndDisplay(const ReadyScene& selected,bool keepView=false) {
+    ReadyScene scene=selected; // selected may refer to previousScene, which is about to change.
+    if(scene.node!=activeScene.node) {
+        if(_wcsicmp(activeScene.path.c_str(),scene.path.c_str())!=0 && canKeep(activeScene)) previousScene=activeScene;
+        else previousScene=ReadyScene();
+        activeScene=scene;
+    }
+    root->removeChildren(0,root->getNumChildren());
+    root->addChild(scene.node);
+    currentPath=scene.path;
+    currentTriangles=scene.triangles;
+    currentPoints=scene.points;
+    currentFolder=directory(currentPath);
+    if(currentIndex()<0) files.push_back(currentPath);
+    updateFileList();
+    manipulator->setNode(root);
+    if(!keepView) manipulator->home(0.0);
+    viewer->requestRedraw();
+    SetWindowTextW(mainWindow,(filename(currentPath)+L" — 棱镜 3D").c_str());
+    std::wostringstream message;
+    if(currentTriangles) message << L"完整模型：" << currentTriangles << L" 个三角形";
+    if(currentPoints) message << (currentTriangles?L"，":L"点云：") << currentPoints << L" 个点";
+    message << L"    |    " << filename(currentPath)
+            << L"    |    左键旋转 · 滚轮缩放 · 空格复位";
+    modelStatus=message.str();
+    showStatus(modelStatus);
+    applyDisplayMode();
+    EnableWindow(buttons[3],TRUE); EnableWindow(buttons[4],currentTriangles>0);
+    EnableWindow(buttons[5],TRUE);
+}
+static void restoreOpening() {
+    if(!job || !job->openingVisible) return;
+    root->removeChildren(0,root->getNumChildren());
+    if(activeScene.node) root->addChild(activeScene.node);
+    applyDisplayMode();
+    manipulator->setByMatrix(job->previousView);
+    job->openingVisible=false;
+    viewer->requestRedraw();
+}
+static void displayOpening() {
+    job->previousView=manipulator->getMatrix();
+    root->removeChildren(0,root->getNumChildren());
+    root->setEnabled(false);
+    root->addChild(job->opening);
+    manipulator->setNode(root); manipulator->home(0.0);
+    job->openingView=manipulator->getMatrix();
+    job->openingVisible=true;
+    showStatus(L"正在读取完整模型，当前显示抽样点："+filename(job->path));
+    viewer->requestRedraw();
+}
+
 static void startLoad(const std::wstring& path) {
     job=new LoadJob(path);
     job->thread=reinterpret_cast<HANDLE>(_beginthreadex(NULL,0,readWorker,job,0,NULL));
@@ -116,18 +213,36 @@ static void startLoad(const std::wstring& path) {
     EnableWindow(buttons[6],TRUE);
     showStatus(L"正在后台读取："+filename(path)+L"    可以取消，或选择其他文件。");
 }
-static bool loadFile(const std::wstring& requested) {
+static bool loadFile(const std::wstring& requested,bool forceReload=false) {
     if(closing) return false;
     wchar_t full[32768];
     DWORD count=GetFullPathNameW(requested.c_str(),32768,full,NULL);
     if(!count || count>=32768 || !isModel(full)) {
         reportError(L"请选择 .stl、.obj 或 .ply 文件。"); return false;
     }
-    if(job) {
-        pendingPath=full;
+    FileStamp disk(full);
+    const ReadyScene* hit=NULL;
+    if(!forceReload) {
+        if(activeScene.matches(full,disk)) hit=&activeScene;
+        else if(previousScene.matches(full,disk)) hit=&previousScene;
+    }
+    if(hit) {
+        if(job) {
+            InterlockedExchange(&job->progress.cancel,1);
+            restoreOpening();
+            pendingPath.clear();
+        }
+        rememberAndDisplay(*hit);
+    } else if(job) {
+        if(!forceReload && !job->progress.canceled() && _wcsicmp(job->path.c_str(),full)==0) return true;
+        pendingPath=full; pendingReload=forceReload;
         InterlockedExchange(&job->progress.cancel,1);
+        restoreOpening();
         showStatus(L"正在切换到："+filename(pendingPath));
-    } else startLoad(full);
+    } else {
+        previousScene=ReadyScene(); // Make room before parsing a third model.
+        startLoad(full);
+    }
     return true;
 }
 static void discardJob() {
@@ -138,10 +253,12 @@ static void discardJob() {
 }
 static void pollLoad() {
     if(!job) return;
+    if(!job->openingVisible && !closing && !job->progress.canceled() && InterlockedCompareExchange(&job->openingReady,0,0))
+        displayOpening();
     if(job->thread && WaitForSingleObject(job->thread,0)!=WAIT_OBJECT_0) {
         if(!job->progress.canceled() && GetTickCount64()-lastProgressTime>100) {
             LONG percent=InterlockedCompareExchange(&job->progress.percent,0,0);
-            std::wostringstream text; text << L"正在读取 ";
+            std::wostringstream text; text << (job->openingVisible?L"抽样点预览 · 正在读取完整模型 ":L"正在读取 ");
             if(percent>=0) text << percent << L"%    ";
             text << filename(job->path) << L"    |    可取消 / 选择其他文件";
             showStatus(text.str()); lastProgressTime=GetTickCount64();
@@ -150,14 +267,15 @@ static void pollLoad() {
     }
     if(job->thread) { CloseHandle(job->thread); job->thread=NULL; }
     if(job->progress.canceled() || closing || !job->error.empty() || !job->model.node) {
-        std::wstring error=job->error;
+        restoreOpening();
+        std::wstring error=job->progress.canceled()?std::wstring():job->error;
         discardJob();
         if(!closing && !pendingPath.empty()) {
-            std::wstring next=pendingPath; pendingPath.clear(); startLoad(next);
+            std::wstring next=pendingPath; pendingPath.clear(); loadFile(next,pendingReload);
         } else if(!closing) {
             SendMessageW(fileList,LB_SETCURSEL,currentIndex(),0);
             if(!error.empty()) reportError(error);
-            else showStatus(L"已取消读取，当前模型保持不变。");
+            else showStatus(activeScene.node?modelStatus:L"已取消读取。");
         }
         return;
     }
@@ -180,29 +298,24 @@ static void pollLoad() {
         }
         return;
     }
-    // Publish only a completed result. Previous scene is retained on failure/cancel.
-    root->removeChildren(0,root->getNumChildren());
-    root->addChild(job->model.node);
-    currentPath=job->path;
-    currentTriangles=job->model.triangles;
-    currentPoints=job->model.points;
-    currentFolder=directory(currentPath);
-    if(currentIndex()<0) files.push_back(currentPath);
+    ReadyScene next;
+    next.node=job->model.node; next.path=job->path;
+    next.triangles=job->model.triangles; next.points=job->model.points;
+    if(job->stamp.matches(FileStamp(next.path))) next.stamp=job->stamp;
+    // Approximate CPU arrays and GPU copies, with room for driver overhead.
+    // Inspect the actual arrays: ASCII file size is a poor estimate for STL.
+    unsigned __int64 arrays=0;
+    for(size_t i=0;i<job->model.chunks.size();++i) {
+        osg::Geometry& geometry=*job->model.chunks[i];
+        osg::Geometry::ArrayList list;
+        geometry.getArrayList(list);
+        for(size_t j=0;j<list.size();++j) if(list[j]) arrays+=list[j]->getTotalDataSize();
+        for(unsigned j=0;j<geometry.getNumPrimitiveSets();++j) arrays+=geometry.getPrimitiveSet(j)->getTotalDataSize();
+    }
+    next.estimatedBytes=arrays*2+(32ULL<<20);
+    bool keepView=job->openingVisible && manipulator->getMatrix()!=job->openingView;
     discardJob();
-    updateFileList();
-    manipulator->setNode(root);
-    manipulator->home(0.0);
-    viewer->requestRedraw();
-    SetWindowTextW(mainWindow,(filename(currentPath)+L" — 棱镜 3D").c_str());
-    std::wostringstream message;
-    if(currentTriangles) message << L"完整模型：" << currentTriangles << L" 个三角形";
-    if(currentPoints) message << (currentTriangles?L"，":L"点云：") << currentPoints << L" 个点";
-    message << L"    |    " << filename(currentPath)
-            << L"    |    左键旋转 · 滚轮缩放 · 空格复位";
-    showStatus(message.str());
-    applyDisplayMode();
-    EnableWindow(buttons[3],TRUE); EnableWindow(buttons[4],currentTriangles>0);
-    EnableWindow(buttons[5],TRUE);
+    rememberAndDisplay(next,keepView);
 }
 static void openDialog() {
     wchar_t path[32768]={0};
@@ -239,15 +352,20 @@ static void command(int id) {
     case PrevId: stepFile(-1); break;
     case NextId: stepFile(1); break;
     case HomeId: if(manipulator) manipulator->home(0.0); break;
-    case ReloadId: if(!currentPath.empty()) loadFile(currentPath); break;
+    case ReloadId: if(!currentPath.empty()) loadFile(currentPath,true); break;
     case CancelId:
         pendingPath.clear();
-        if(job) { InterlockedExchange(&job->progress.cancel,1); showStatus(L"正在取消读取……"); }
+        if(job) {
+            InterlockedExchange(&job->progress.cancel,1);
+            restoreOpening();
+            showStatus(L"正在取消读取……");
+        }
         break;
     case WireId:
         if(currentPoints>0 && !currentTriangles) break;
         displayMode=DisplayMode((displayMode+1)%3);
         applyDisplayMode();
+        if(job && job->openingVisible) root->setEnabled(false);
         break;
     }
     if(viewer) viewer->requestRedraw();
@@ -400,7 +518,11 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int show) {
             pollLoad();
             if(closing && !job) { running=false; continue; }
             if(!closing && !IsIconic(mainWindow) && viewer->checkNeedToDoFrame()) viewer->frame();
-            Sleep(loading?1:10);
+            // Pump messages between uploads without imposing a timer tick per chunk.
+            if(job && !job->thread) continue;
+            HANDLE worker=job?job->thread:NULL;
+            MsgWaitForMultipleObjectsEx(worker?1:0,worker?&worker:NULL,worker?20:10,
+                QS_ALLINPUT,MWMO_INPUTAVAILABLE);
         }
     }
     viewer->setDone(true); viewer=NULL; graphics=NULL; root=NULL; manipulator=NULL; polygonMode=NULL;

@@ -40,6 +40,23 @@ foreach($format in @('binary_little_endian','binary_big_endian')){
         foreach($index in @(0,1,2,3,7)){$bytes=[BitConverter]::GetBytes([uint32]$index);if($format -eq 'binary_big_endian'){[Array]::Reverse($bytes)};$writer.Write($bytes)}
     } finally {$writer.Dispose()}
 }
+# Two packed triangles reuse the four vertices from the little-endian fixture.
+$template=[IO.File]::ReadAllBytes((Join-Path $OutputDirectory 'binary_little_endian.ply'))
+$oldHeader=$header.Replace('FORMAT','binary_little_endian')
+$newHeader=$oldHeader.Replace("comment synthetic regression fixture`n",'').Replace('element face 1','element face 2')
+$writer=New-Object IO.BinaryWriter([IO.File]::Create((Join-Path $OutputDirectory 'packed.ply')))
+try {
+    $writer.Write([Text.Encoding]::ASCII.GetBytes($newHeader))
+    $writer.Write($template,$oldHeader.Length,4*28)
+    foreach($face in @(@(0,1,2),@(0,2,3))){
+        $writer.Write([byte]3)
+        foreach($index in $face){$writer.Write([uint32]$index)}
+        $writer.Write([uint32]7)
+    }
+} finally {$writer.Dispose()}
+$invalid=[IO.File]::ReadAllBytes((Join-Path $OutputDirectory 'packed.ply'))
+$invalid[$newHeader.Length+4*28+1]=9
+[IO.File]::WriteAllBytes((Join-Path $OutputDirectory 'packed-invalid-index.ply'),$invalid)
 $pointHeader="ply`nformat ascii 1.0`nelement vertex COUNT`nproperty float x`nproperty float y`nproperty float z`nproperty uchar red`nproperty uchar green`nproperty uchar blue`nelement face 0`nproperty list uchar uint vertex_indices`nend_header`n"
 $points=New-Object Text.StringBuilder
 for($y=0;$y -lt 3;$y++){for($x=0;$x -lt 3;$x++){ $color=@('255 0 0','0 255 0','0 0 255')[$x];[void]$points.Append("$x $y 0 $color`n") }}

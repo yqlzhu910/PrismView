@@ -14,6 +14,7 @@
 #include <limits>
 #include <locale>
 #include <stdexcept>
+#include <sstream>
 
 namespace stlview {
 namespace {
@@ -78,42 +79,160 @@ void binary(std::ifstream& file,unsigned int count,Progress& progress,Model& mod
         update(progress,first+length,count);
     }
 }
-std::string token(std::istream& file) {
-    std::string word;
-    // Bound token size even for malformed binary input mislabelled as ASCII.
-    file >> std::ws;
-    while(file && file.peek()!=EOF && !std::isspace(static_cast<unsigned char>(file.peek()))) {
-        if(word.size()==256) throw std::runtime_error("invalid");
-        word.push_back(char(std::tolower(static_cast<unsigned char>(file.get()))));
+struct Word {
+    const char* data;
+    size_t size;
+    Word(const char* p,size_t n):data(p),size(n) {}
+    bool is(const char* expected) const {
+        if(std::strlen(expected)!=size) return false;
+        for(size_t i=0;i<size;++i) if((data[i]|32)!=expected[i]) return false;
+        return true;
     }
-    return word;
+};
+
+class TextInput {
+    std::ifstream& file;
+    Progress& progress;
+    unsigned __int64 total,readBytes;
+    std::vector<char> buffer;
+    size_t pos,end;
+    bool eof;
+    std::string longNumber;
+    static bool space(char c) { return c==' ' || (c>='\t' && c<='\r'); }
+    void refill() {
+        check(progress);
+        size_t left=end-pos;
+        if(left) std::memmove(&buffer[0],&buffer[pos],left);
+        file.read(&buffer[left],buffer.size()-left);
+        if(file.bad()) throw std::runtime_error("io");
+        size_t n=size_t(file.gcount());
+        pos=0; end=left+n; readBytes+=n; eof=end<buffer.size();
+        update(progress,readBytes,total);
+    }
+public:
+    TextInput(std::ifstream& stream,Progress& status,unsigned __int64 bytes)
+        :file(stream),progress(status),total(bytes),readBytes(0),buffer(256*1024),pos(0),end(0),eof(false) {}
+    Word word() {
+        for(;;) {
+            while(pos<end && space(buffer[pos])) ++pos;
+            if(pos<end || eof) break;
+            refill();
+        }
+        if(end-pos<257 && !eof) refill();
+        size_t start=pos;
+        while(pos<end && !space(buffer[pos])) {
+            if(pos-start==256) {
+                char lead=buffer[start];
+                if((lead<'0' || lead>'9') && lead!='+' && lead!='-' && lead!='.') throw std::runtime_error("invalid");
+                longNumber.assign(&buffer[start],pos-start);
+                for(;;) {
+                    size_t more=pos;
+                    while(pos<end && !space(buffer[pos])) ++pos;
+                    longNumber.append(&buffer[0]+more,pos-more);
+                    if(pos<end || eof) return Word(longNumber.data(),longNumber.size());
+                    refill();
+                }
+            }
+            ++pos;
+        }
+        return Word(&buffer[0]+start,pos-start);
+    }
+    void expect(const char* expected) {
+        if(!word().is(expected)) throw std::runtime_error("invalid");
+    }
+    void restOfLine() {
+        for(;;) {
+            while(pos<end) if(buffer[pos++]=='\n') return;
+            if(eof) return;
+            refill();
+        }
+    }
+};
+
+// Run the same classic-locale extraction as the original loader, on a token
+// already in RAM. Reusing the stream also preserves VC110 rounding behavior.
+class NumberInput : private std::streambuf {
+    std::istream stream;
+public:
+    NumberInput():stream(this) { stream.imbue(std::locale::classic()); }
+    template<typename T> T read(const Word& word) {
+        if(!word.size) throw std::runtime_error("invalid");
+        char* p=const_cast<char*>(word.data); // The stream only reads the get area.
+        setg(p,p,p+word.size);
+        stream.clear();
+        T value;
+        if(!(stream>>value) || gptr()!=egptr() || !_finite(value)) throw std::runtime_error("invalid");
+        return value;
+    }
+};
+
+// STL exports repeat the same coordinate literals on adjacent facets. Keep
+// a small, bounded per-read table; collisions just use the normal converter.
+class Coordinates {
+    struct Entry {
+        char text[32];
+        unsigned length;
+        float value;
+        Entry():length(0),value(0) {}
+    };
+    std::vector<Entry> entries;
+    NumberInput& numbers;
+public:
+    explicit Coordinates(NumberInput& input):entries(8192),numbers(input) {}
+    float get(const Word& word) {
+        if(!word.size || word.size>32) return numbers.read<float>(word);
+        unsigned hash=unsigned(word.size);
+        for(size_t i=0;i<word.size;++i) hash=hash*31+static_cast<unsigned char>(word.data[i]);
+        Entry& entry=entries[(hash^(hash>>16)) & 8191];
+        if(entry.length==word.size && std::memcmp(word.data,entry.text,word.size)==0) return entry.value;
+        entry.value=numbers.read<float>(word);
+        std::memcpy(entry.text,word.data,word.size); entry.length=unsigned(word.size);
+        return entry.value;
+    }
+};
+inline void validateNormal(const Word& word,NumberInput& numbers) {
+    // Facet normals are computed from the vertices. Plain short decimals
+    // necessarily fit in a double, so only their syntax needs checking.
+    if(word.size && word.size<=36) {
+        size_t i=(word.data[0]=='+' || word.data[0]=='-')?1:0;
+        bool digit=false,dot=false;
+        for(;i<word.size;++i) {
+            char c=word.data[i];
+            if(c>='0' && c<='9') digit=true;
+            else if(c=='.' && !dot) dot=true;
+            else break;
+        }
+        if(digit && i==word.size) return;
+    }
+    numbers.read<double>(word);
 }
-void expect(std::istream& file,const char* word) {
-    if(token(file)!=word) throw std::runtime_error("invalid");
-}
+
 void ascii(std::ifstream& file,Progress& progress,Model& model,bool bom) {
-    file.clear(); file.seekg(bom?3:0); file.imbue(std::locale::classic());
+    file.clear(); file.seekg(bom?3:0);
+    TextInput input(file,progress,model.fileBytes);
+    NumberInput numbers;
+    Coordinates coordinates(numbers);
     Chunk chunk(ChunkTriangles);
     bool solid=false;
     for(;;) {
-        check(progress);
-        std::string word=token(file);
-        if(word.empty()) break;
-        if(word=="solid" || word=="endsolid") {
-            solid=true; file.ignore((std::numeric_limits<std::streamsize>::max)(),'\n'); continue;
+        Word word=input.word();
+        if(!word.size) break;
+        if(word.is("solid") || word.is("endsolid")) {
+            solid=true; input.restOfLine(); continue;
         }
-        if(word!="facet" || !solid) throw std::runtime_error("invalid");
-        expect(file,"normal");
-        double nx,ny,nz; if(!(file>>nx>>ny>>nz)) throw std::runtime_error("invalid");
-        expect(file,"outer"); expect(file,"loop");
+        if(!solid || !word.is("facet")) throw std::runtime_error("invalid");
+        input.expect("normal");
+        for(int k=0;k<3;++k) validateNormal(input.word(),numbers);
+        input.expect("outer"); input.expect("loop");
         osg::Vec3 v[3];
-        for(int j=0;j<3;++j) { expect(file,"vertex"); if(!(file>>v[j].x()>>v[j].y()>>v[j].z())) throw std::runtime_error("invalid"); }
-        expect(file,"endloop"); expect(file,"endfacet");
+        for(int j=0;j<3;++j) {
+            input.expect("vertex");
+            for(int k=0;k<3;++k) v[j][k]=coordinates.get(input.word());
+        }
+        input.expect("endloop"); input.expect("endfacet");
         chunk.append(v[0],v[1],v[2]);
         if(chunk.vertices->size()==ChunkTriangles*3) {
-            chunk.finish(model); chunk=Chunk(ChunkTriangles);
-            std::streampos position=file.tellg();
-            if(position>=0) update(progress,static_cast<unsigned __int64>(position),model.fileBytes);
+            check(progress); chunk.finish(model); chunk=Chunk(ChunkTriangles);
         }
     }
     chunk.finish(model);

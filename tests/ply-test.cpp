@@ -30,6 +30,11 @@ int wmain(int argc,wchar_t** argv){
     const wchar_t* files[]={L"彩色四边形.PLY",L"binary_little_endian.ply",L"binary_big_endian.ply"};
     const char* labels[]={"ASCII + Chinese path + uppercase extension","little-endian binary + custom face property","big-endian binary"};
     for(int i=0;i<3;++i){bool ok=stlview::readPly(base+L"\\"+files[i],progress,model,error);require(ok,labels[i]);if(ok)verifyMesh(model);}
+    const bool packed=stlview::readPly(base+L"\\packed.ply",progress,model,error);
+    require(packed,"packed two-triangle binary PLY");
+    if(packed) verifyMesh(model);
+    require(!stlview::readPly(base+L"\\packed-invalid-index.ply",progress,model,error) &&
+        !model.node && !error.empty(),"packed face outside vertex array rejected");
     bool ok=stlview::readPly(base+L"\\点云.ply",progress,model,error);
     require(ok && model.points==9 && model.triangles==0,"point-only PLY");
     if(ok && !model.chunks.empty())require(!(model.chunks[0]->getStateSet()->getMode(GL_LIGHTING)&osg::StateAttribute::ON),"point cloud lighting disabled");
